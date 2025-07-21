@@ -1,6 +1,6 @@
 import {
   showErrorMessage,
-  Dialog,
+  //Dialog,
   Toolbar,
   ToolbarButton,
   CommandToolbarButton
@@ -207,13 +207,24 @@ export class DaskClusterManager extends Widget {
       { method: 'GET' },
       this._serverSettings
     );
-
-    if (response.status !== 200) {
-      const err = 'No response from factories';
-      void showErrorMessage(err, Dialog.cancelButton());
-
+    console.log(`${this._serverSettings.baseUrl}dask/clusters/factories`);
+    if (response.status === 404) {
+      const err = new Error('Resource not found');
+      void showErrorMessage('Error', err);
+      throw err;
+    } else if (response.status !== 200) {
+      const err = new Error('Unexpected response from server');
+      void showErrorMessage('Error', err);
       throw err;
     }
+    
+    //if (response.status !== 200) {
+    //  const err = new Error('No response from factories');
+    //  void showErrorMessage('Error', err);
+    //  //void showErrorMessage('Cluster Start Error', { message: err });
+
+    //  throw err;
+    //}
 
     let factories = await response.json();
     console.log("start factories", factories);
@@ -225,7 +236,9 @@ export class DaskClusterManager extends Widget {
         factoryList.push({
           "name": val.name,
           "selected": false,
-          "singularityImage": val.singularityImage
+          "singularityImage": val.singularityImage,
+          "user_cores": val.user_cores,
+          "user_memory": val.user_memory
         })
       });
       console.log("start factoryList", factoryList)
@@ -234,7 +247,7 @@ export class DaskClusterManager extends Widget {
       console.log("start", selectedFactory);
 
       if (selectedFactory.name !== "undefined" && selectedFactory.selected !== false) {
-        const cluster = await this._launchCluster(selectedFactory.name, selectedFactory.singularityImage);
+        const cluster = await this._launchCluster(selectedFactory.name, selectedFactory.singularityImage, selectedFactory.user_cores, selectedFactory.user_memory);
         return cluster;
       }
     } else {
@@ -480,10 +493,10 @@ export class DaskClusterManager extends Widget {
   /**
    * Launch a new cluster on the server.
    */
-  private async _launchCluster(factoryName: string = "default", singularityImage: string = ""): Promise<IClusterModel> {
+  private async _launchCluster(factoryName: string = "default", singularityImage: string = "", user_cores: number = 1, user_memory: string = ""): Promise<IClusterModel> {
     this._isReady = false;
     this._registry.notifyCommandChanged(this._launchClusterId);
-    let data = JSON.stringify({ factoryName: factoryName, singularityImage: singularityImage });
+    let data = JSON.stringify({ factoryName: factoryName, singularityImage: singularityImage, user_cores: user_cores, user_memory: user_memory });
     console.log("_launchCluster", data);
     const response = await ServerConnection.makeRequest(
       `${this._serverSettings.baseUrl}dask/clusters`,
@@ -946,6 +959,9 @@ export interface IClusterFactoryModel extends JSONObject {
    * Selected factory
    */
   selected: boolean;
+  
+  user_cores: number;
+  user_memory: string;
 }
 
 /**

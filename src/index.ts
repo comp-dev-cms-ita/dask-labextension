@@ -12,10 +12,15 @@ import {
   WidgetTracker
 } from '@jupyterlab/apputils';
 
+import { Cell } from '@jupyterlab/cells';
 
 import { CodeEditor } from '@jupyterlab/codeeditor';
 
+import { LabIcon } from '@jupyterlab/ui-components';
+
 import { ConsolePanel, IConsoleTracker } from '@jupyterlab/console';
+
+import { DocumentRegistry } from '@jupyterlab/docregistry';
 
 import { IMainMenu } from '@jupyterlab/mainmenu';
 
@@ -31,6 +36,8 @@ import {
 
 import { Kernel, KernelMessage, Session } from '@jupyterlab/services';
 
+import { topologicSort } from '@lumino/algorithm';
+
 import { Signal } from '@lumino/signaling';
 
 import { IClusterModel, DaskClusterManager } from './clusters';
@@ -41,11 +48,35 @@ import { DaskSidebar } from './sidebar';
 
 import '../style/index.css';
 
+
+import DaskSvgStr from '../style/dask.svg';
+
+export const DaskIcon = new LabIcon({
+  name: 'dask:icon',
+  svgstr: DaskSvgStr
+});
+
+
 namespace CommandIDs {
   /**
    * Launch a dask dashboard panel in an iframe.
    */
   export const launchPanel = 'dask:launch-dashboard';
+  
+  /**
+   * Launch a dask custom layout.
+   */
+  export const launchLayout = 'dask:launch-layout';
+  
+  /**
+   * Attempt to find an active dask cluster.
+   */
+  export const populateDashboardUrl = 'dask:populate-dashboard-url';
+  
+  /**
+   * Attempt to find an active dask cluster.
+   */
+  export const populateAndLaunchLayout = 'dask:populate-and-launch-layout';
 
   /**
    * Inject client code into the active editor.
@@ -133,8 +164,8 @@ async function activate(
     return link;
   };
 
-  const clientCodeInjector = (model: IClusterModel) => {
-    const editor = Private.getCurrentEditor(
+  const clientCodeInjector = async (model: IClusterModel) => {
+    const editor = await Private.getCurrentEditor(
       app,
       notebookTracker,
       consoleTracker
@@ -148,7 +179,7 @@ async function activate(
   // Create the Dask sidebar panel.
   const sidebar = new DaskSidebar({
     launchDashboardItem: (item: IDashboardItem) => {
-      void app.commands.execute(CommandIDs.launchPanel, item);
+      void app.commands.execute(CommandIDs.launchPanel, { item });
     },
     linkFinder,
     clientCodeInjector,
@@ -157,7 +188,11 @@ async function activate(
     launchClusterId: CommandIDs.launchCluster
   });
   sidebar.id = id;
-  sidebar.title.iconClass = 'dask-DaskLogo jp-SideBar-tabIcon';
+
+  sidebar.title.icon = DaskIcon;
+
+  sidebar.title.iconClass = 'jp-SideBar-tabIcon';
+  
   sidebar.title.caption = 'Dask';
 
   // An instance tracker which is used for state restoration.
@@ -169,7 +204,7 @@ async function activate(
   restorer.add(sidebar, id);
   void restorer.restore(tracker, {
     command: CommandIDs.launchPanel,
-    args: widget => widget.item || {},
+    args: widget => ({ item: widget.item }) || {},
     name: widget => (widget.item && widget.item.route) || ''
   });
 
@@ -183,22 +218,20 @@ async function activate(
       // Identify the dashboard item associated with the widget
       const dashboard = dashboards.find(d => widget.item?.route === d.route);
 
-      // If the dashboard item doesn't exist in the new listing, close the pane.
-      if (!dashboard) {
-        widget.dispose();
+      // If the dashboard item doesn't exist in the new listing, or if the new
+      // url is inactive, mark the existing pane as such.
+
+      if (!dashboard || !input.urlInfo.isActive) {
+
+        widget.active = false;
+
+        widget.dashboardUrl = '';
         return;
       }
 
       // Possibly update the name of the existing dashboard pane.
       if (`${dashboard.label}` !== widget.title.label) {
         widget.title.label = `${dashboard.label}`;
-      }
-
-      // If the dashboard server is inactive, mark it as such.
-      if (!input.urlInfo.isActive) {
-        widget.dashboardUrl = '';
-        widget.active = false;
-        return;
       }
 
       widget.dashboardUrl = input.urlInfo.effectiveUrl || input.urlInfo.url;
@@ -284,6 +317,18 @@ async function activate(
   // into the current session.
   let autoStartClient: boolean = false;
 
+
+  // Whether to hide the cluster manager for deployments that don't want to
+  // or are unable to use it.
+  let hideClusterManager: boolean = false;
+
+  // Whether to test the Dask dashboard using a fetch request or to proceed
+  // with default behavior.
+  let browserDashboardCheck: boolean = false;
+
+  // The default layout for dashboards.
+  let defaultLayout: { [x: string]: { mode: string; ref: string } };
+
   // Update the existing trackers and signals in light of a change to the
   // settings system. In particular, this reacts to a change in the setting
   // for auto-starting cluster client.
@@ -344,6 +389,24 @@ async function activate(
         // Determine whether to use the auto-starting client.
         autoStartClient = settings.get('autoStartClient').composite as boolean;
         updateTrackers();
+        // Determine whether to validate dashboards via browser check.
+        browserDashboardCheck = settings.get('browserDashboardCheck')
+
+          .composite as boolean;
+
+        sidebar.dashboardLauncher.input.browserDashboardCheck =
+
+          browserDashboardCheck;
+
+        //Determine whether to hide the cluster manager
+        hideClusterManager = settings.get('hideClusterManager')
+          .composite as boolean;
+        sidebar.clusterManager.setHidden(hideClusterManager);
+
+        // Get the default layout
+        defaultLayout = settings.get('defaultLayout').composite as {
+          [x: string]: { mode: string; ref: string };
+        };
       };
       onSettingsChanged();
       // React to a change in the settings.
@@ -359,14 +422,18 @@ async function activate(
 
   // Add the command for launching a new dashboard item.
   app.commands.addCommand(CommandIDs.launchPanel, {
-    label: args => `Launch Dask ${(args['label'] as string) || ''} Dashboard`,
+    label: args =>  
+    `Launch Dask ${
+        ((args.item as IDashboardItem)['label'] as string) || ''
+      } Dashboard`,
     caption: 'Launch a Dask dashboard',
     execute: args => {
       // Construct the url for the dashboard.
       const urlInfo = sidebar.dashboardLauncher.input.urlInfo;
       const dashboardUrl = urlInfo.effectiveUrl || urlInfo.url;
       const active = urlInfo.isActive;
-      const dashboardItem = args as IDashboardItem;
+      const dashboardItem = args.item as IDashboardItem;
+      const addOptions = args?.options as DocumentRegistry.IOpenOptions;
 
       // If we already have a dashboard open to this url, activate it
       // but don't create a duplicate.
@@ -375,7 +442,7 @@ async function activate(
       });
       if (w) {
         if (!w.isAttached) {
-          labShell.add(w, 'main');
+          labShell.add(w, 'main', addOptions);
         }
         labShell.activateById(w.id);
         return;
@@ -388,11 +455,110 @@ async function activate(
       dashboard.active = active;
       dashboard.id = `dask-dashboard-${Private.id++}`;
       dashboard.title.label = `${dashboardItem.label}`;
-      dashboard.title.icon = 'dask-DaskLogo';
+      dashboard.title.icon = DaskIcon;
+
+      labShell.add(dashboard, 'main', addOptions);
 
       labShell.add(dashboard, 'main');
       void tracker.add(dashboard); // no need to wait on this
       return dashboard;
+    }
+  });
+
+  const _normalize_ref = (r: string) => {
+    if (r.startsWith('/')) {
+      r = r.slice(1);
+    }
+
+    if (!r.startsWith('individual-')) {
+      r = 'individual-' + r;
+    }
+    return r;
+  };
+
+  app.commands.addCommand(CommandIDs.launchLayout, {
+    label: 'Launch Dask Dashboard Layout',
+    caption: 'Launch a pre-configured Dask Dashboard Layout',
+    isEnabled: () => sidebar.dashboardLauncher.input.urlInfo.isActive,
+    execute: async () => {
+      const dashboards = sidebar.dashboardLauncher.items;
+
+      // Compute the order that we have to add the panes so that the refs
+      // exist when we need them.
+
+      const dependencies: Array<[string, string]> = [];
+      for (let k of Object.keys(defaultLayout)) {
+        dependencies.push([defaultLayout[k].ref || null, k]);
+      }
+
+      const order = topologicSort(dependencies).filter(d => d); // sort and remove nulls
+      const initial = app.shell.currentWidget;
+
+      for (let k of order) {
+        const opts = defaultLayout[k];
+        const dashboard = dashboards.find(
+          d => _normalize_ref(d.route) === _normalize_ref(k)
+        );
+
+        if (!dashboard) {
+          console.warn(`Non-existent dashboard found in Dask layout spec ${k}`);
+          continue;
+        }
+
+        const options: { mode: string; ref?: string } = { mode: opts.mode };
+        if (opts.ref) {
+          const ref = tracker.find(w => {
+            return !!(
+              w &&
+              w.item &&
+              _normalize_ref(w.item.route) === _normalize_ref(opts.ref)
+            );
+          });
+
+          if (!ref) {
+            console.warn(
+              `Non-existent dashboard found in Dask layout spec ${opts.ref}`
+            );
+            options.ref = null;
+          } else {
+            options.ref = ref.id;
+          }
+        } else {
+          options.ref = null;
+        }
+        await app.commands.execute(CommandIDs.launchPanel, {
+          item: dashboard,
+          options: options
+        });
+      }
+      app.shell.activateById(initial.id);
+    }
+  });
+
+  app.commands.addCommand(CommandIDs.populateDashboardUrl, {
+    label: 'Populate Dask Dashboard URL',
+    caption: 'Attempt to populate the URL for an active Dask cluster',
+    execute: async args => {
+      let url = (args.url as string) || (await linkFinder());
+      if (url) {
+        sidebar.dashboardLauncher.input.url = url;
+      }
+      return url;
+    }
+  });
+
+  app.commands.addCommand(CommandIDs.populateAndLaunchLayout, {
+    label: 'Populate Dask Dashboard URL and launch the default layout',
+    caption:
+      'Attempt to populate the URL for an active Dask cluster and then launch the default layout',
+    execute: async args => {
+      const url = await app.commands.execute(
+        CommandIDs.populateDashboardUrl,
+        args
+      );
+      if (url) {
+        await app.commands.execute(CommandIDs.launchLayout);
+      }
     }
   });
 
@@ -402,12 +568,12 @@ async function activate(
   // If either is not found, it bails.
   app.commands.addCommand(CommandIDs.injectClientCode, {
     label: 'Inject Dask Client Connection Code',
-    execute: () => {
+    execute: async () => {
       const cluster = Private.clusterFromClick(app, sidebar.clusterManager);
       if (!cluster) {
         return;
       }
-      clientCodeInjector(cluster);
+      await clientCodeInjector(cluster);
     }
   });
 
@@ -471,18 +637,19 @@ async function activate(
   });
 
   // Add some commands to the menu and command palette.
+  mainMenu.fileMenu.addGroup([{ command: CommandIDs.launchLayout }], 50);
   mainMenu.settingsMenu.addGroup([
     { command: CommandIDs.toggleAutoStartClient }
   ]);
-  [CommandIDs.launchCluster, CommandIDs.toggleAutoStartClient].forEach(
+  [CommandIDs.launchCluster, CommandIDs.launchLayout, CommandIDs.toggleAutoStartClient].forEach(
     command => {
-      commandPalette.addItem({
-        category: 'Dask',
-        command,
-        args: { isPalette: true }
-      });
-    }
-  );
+    commandPalette.addItem({
+      category: 'Dask',
+      command,
+      args: { isPalette: true }
+    });
+  }
+);
 
   // Add a context menu items.
   app.contextMenu.addItem({
@@ -584,10 +751,8 @@ client = Client()`;
     cluster: IClusterModel,
     editor: CodeEditor.IEditor
   ): void {
-    const cursor = editor.getCursorPosition();
-    const offset = editor.getOffsetAt(cursor);
     const code = getClientCode(cluster);
-    editor.model.value.insert(offset, code);
+    editor.model.sharedModel.setSource(code);
   }
 
   /**
@@ -627,41 +792,51 @@ client`;
     return kernel;
   }
 
-  /**
-   * Get the currently focused editor in the application,
-   * checking both notebooks and consoles.
-   * In the case of a notebook, it creates a new cell above the currently
-   * active cell and then returns that.
+    /**
+   * Wait until the cell is ready and return a promise
+   * that fullfils to editor
    */
-  export function getCurrentEditor(
-    app: JupyterFrontEnd,
-    notebookTracker: INotebookTracker,
-    consoleTracker: IConsoleTracker
-  ): CodeEditor.IEditor | null | undefined {
-    // Get a handle on the most relevant kernel,
-    // whether it is attached to a notebook or a console.
-    let current = app.shell.currentWidget;
-    let editor: CodeEditor.IEditor | null | undefined;
-    if (current && notebookTracker.has(current)) {
-      NotebookActions.insertAbove((current as NotebookPanel).content);
-      const cell = (current as NotebookPanel).content.activeCell;
-      editor = cell && cell.editor;
-    } else if (current && consoleTracker.has(current)) {
-      const cell = (current as ConsolePanel).console.promptCell;
-      editor = cell && cell.editor;
-    } else if (notebookTracker.currentWidget) {
-      const current = notebookTracker.currentWidget;
-      NotebookActions.insertAbove(current.content);
-      const cell = current.content.activeCell;
-      editor = cell && cell.editor;
-    } else if (consoleTracker.currentWidget) {
-      const current = consoleTracker.currentWidget;
-      const cell = current.console.promptCell;
-      editor = cell && cell.editor;
+    export async function getEditor(
+      cell: Cell
+    ): Promise<CodeEditor.IEditor | null | undefined> {
+      await cell.ready;
+      return cell && cell.editor;
     }
-    return editor;
-  }
-
+  
+    /**
+     * Get the currently focused editor in the application,
+     * checking both notebooks and consoles.
+     * In the case of a notebook, it creates a new cell above the currently
+     * active cell and then returns that.
+     */
+    export async function getCurrentEditor(
+      app: JupyterFrontEnd,
+      notebookTracker: INotebookTracker,
+      consoleTracker: IConsoleTracker
+    ): Promise<CodeEditor.IEditor | null | undefined> {
+      // Get a handle on the most relevant kernel,
+      // whether it is attached to a notebook or a console.
+      let current = app.shell.currentWidget;
+      let editor: CodeEditor.IEditor | null | undefined;
+      if (current && notebookTracker.has(current)) {
+        NotebookActions.insertAbove((current as NotebookPanel).content);
+        return getEditor((current as NotebookPanel).content.activeCell);
+  
+      } else if (current && consoleTracker.has(current)) {
+        return getEditor((current as ConsolePanel).console.promptCell);
+  
+      } else if (notebookTracker.currentWidget) {
+        const current = notebookTracker.currentWidget;
+        NotebookActions.insertAbove(current.content);
+        return getEditor(current.content.activeCell);
+      
+      } else if (consoleTracker.currentWidget) {
+        const current = consoleTracker.currentWidget;
+        return getEditor(current.console.promptCell);
+      }
+      return editor;
+    }
+    
   /**
    * Get a cluster model based on the application context menu click node.
    */

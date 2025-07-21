@@ -58,6 +58,7 @@ export class DaskDashboard extends MainAreaWidget<IFrame> {
     });
     this._inactivePanel = Private.createInactivePanel();
     this.content.node.appendChild(this._inactivePanel);
+    this.addClass('dask-DaskDashboard-widget');
     this.update();
   }
 
@@ -266,19 +267,21 @@ export class URLInput extends Widget {
     if (newValue === oldValue.url) {
       return;
     }
-    void Private.testDaskDashboard(newValue, this._serverSettings).then(
-      result => {
-        this._urlInfo = result;
-        this._urlChanged.emit({ oldValue, newValue: result });
-        this._input.blur();
-        this.update();
-        if (!result) {
-          console.warn(
-            `${newValue} does not appear to host a valid Dask dashboard`
-          );
-        }
+    void Private.testDaskDashboard(
+      newValue,
+      this._serverSettings,
+      this._browserDashboardCheck
+    ).then(result => {
+      this._urlInfo = result;
+      this._urlChanged.emit({ oldValue, newValue: result });
+      this._input.blur();
+      this.update();
+      if (!result) {
+        console.warn(
+          `${newValue} does not appear to host a valid Dask dashboard`
+        );
       }
-    );
+    });
   }
 
   /**
@@ -294,6 +297,17 @@ export class URLInput extends Widget {
    */
   get urlInfoChanged(): ISignal<this, URLInput.IChangedArgs> {
     return this._urlChanged;
+  }
+
+  /**
+  * The in browser dashboard check for authenticated dashboards.
+  */
+
+  get browserDashboardCheck(): boolean {
+    return this._browserDashboardCheck;
+  }
+  set browserDashboardCheck(value: boolean) {
+    this._browserDashboardCheck = value;
   }
 
   /**
@@ -362,7 +376,8 @@ export class URLInput extends Widget {
         }
         const result = await Private.testDaskDashboard(
           urlInfo.url,
-          this._serverSettings
+          this._serverSettings,
+          this._browserDashboardCheck
         );
         // Show an error if the connection died.
         if (!result.isActive && urlInfo.isActive) {
@@ -377,16 +392,24 @@ export class URLInput extends Widget {
             newValue: result
           });
         }
+      // Throw an error if the connection died. If we don't raise/reject here,
+        // then the poll won't back off.
+        if (!result.isActive) {
+          throw Error(`No connection to ${urlInfo.url}`);
+        }
       },
-      frequency: { interval: 4 * 1000, backoff: true, max: 60 * 1000 },
+      frequency: { interval: 4 * 1000, backoff: true, max: 120 * 1000 },
       standby: 'when-hidden'
     });
+    // When the URL changes, refresh the poll and backoff.
+    this._urlChanged.connect(() => this._poll.refresh(), this);
   }
 
   private _urlChanged = new Signal<this, URLInput.IChangedArgs>(this);
   private _urlInfo: DashboardURLInfo = { isActive: false, url: '', plots: {} };
   private _input: HTMLInputElement;
   private _poll: Poll;
+  private _browserDashboardCheck: boolean = false;
   private _serverSettings: ServerConnection.ISettings;
 }
 
@@ -569,7 +592,8 @@ namespace Private {
    */
   export async function testDaskDashboard(
     url: string,
-    settings: ServerConnection.ISettings
+    settings: ServerConnection.ISettings,
+    browserDashboardCheck: boolean = false
   ): Promise<DashboardURLInfo> {
     url = normalizeDashboardUrl(url, settings.baseUrl);
 
@@ -595,8 +619,40 @@ namespace Private {
             plots: {}
           };
         }
+      })
+      .catch(() => {
+        return {
+          url,
+          isActive: false,
+          plots: {}
+        };
       });
-    }
+  } else if (browserDashboardCheck) {
+    return fetch(URLExt.join(url, 'individual-plots.json'))
+      .then(async response => {
+        if (response.status === 200) {
+          const plots = (await response.json()) as { [plot: string]: string };
+          return {
+            url,
+            isActive: true,
+            plots
+          };
+        } else {
+          return {
+            url,
+            isActive: false,
+            plots: {}
+          };
+        }
+      })
+      .catch(() => {
+        return {
+          url,
+          isActive: false,
+          plots: {}
+        };
+      });
+  }
 
     const response = await ServerConnection.makeRequest(
       URLExt.join(

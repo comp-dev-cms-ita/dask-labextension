@@ -105,6 +105,22 @@ export class ClusterCreating extends React.Component<
     });
   }
 
+  onCoresChange(event: React.ChangeEvent): void {
+    let currentCores = parseInt((event.target as HTMLInputElement).value, 10);
+    this.state.model.forEach((val: IClusterFactoryModel) => {
+      val.user_cores = currentCores;
+    })
+    this.setState({ model: this.state.model });
+  }
+
+  onMemoryChange(event: React.ChangeEvent): void { 
+    let currentSelection = (event.target as HTMLInputElement).value;
+    this.state.model.forEach((val: IClusterFactoryModel) => {
+      val.user_memory = currentSelection;
+    });
+    this.setState({ model: this.state.model });
+  }
+
   /**
    * Render the component..
    */
@@ -138,8 +154,26 @@ export class ClusterCreating extends React.Component<
               this.onImageChange(evt);
             }}/>
             <datalist id="ice-cream-flavors">
-              <option value="/cvmfs/images.dodas.infn.it/registry.hub.docker.com/dodasts/root-in-docker:ubuntu22-kernel-v1"> Base RDF </option>
-              <option value="TODO"> Base Coffea [WIP] </option>
+              <option value="/cvmfs/unpacked.cern.ch/ghcr.io/comp-dev-cms-ita/kernel-root:v0.0.11-rc3"> Base ROOT 6.32.00 + CMSJMECalculator main@1341dce26396def7860929af944d0612540fa0a5 + Correctionlib 2.6.4 </option>
+              <option value="/cvmfs/unpacked.cern.ch/ghcr.io/comp-dev-cms-ita/kernel-coffea:v0.0.11-rc3"> Base Coffea 0.7.22 </option>
+              <option value="/cvmfs/unpacked.cern.ch/ghcr.io/comp-dev-cms-ita/kernel-mkshapesrdf:v0.0.11-rc3"> mkShapesRDF master@2f3a5427e4dc0af4d54afb55219207e0d2b51bce </option>
+              <option value="/cvmfs/unpacked.cern.ch/ghcr.io/comp-dev-cms-ita/kernel-pocketcoffea:v0.0.11-rc3"> PocketCoffea 0.9.8  </option>
+            </datalist>
+          </div>
+          <div className="dask-ScalingSection-item">
+            Cores per HTCondor job:
+            <input type="number" min="1" max="4" onChange={evt => {
+              this.onCoresChange(evt);
+            }} />
+          </div>
+          <div className="dask-ScalingSection-item"> 
+            Memory per HTCondor job:
+            <input list="ice-cream-flavors-2" id="ice-cream-choice-2" name="ice-cream-choice-2" onChange={evt => {
+              this.onMemoryChange(evt);
+            }}/>
+            <datalist id="ice-cream-flavors-2">
+              <option value="2 GiB"> 2 GiB </option>
+              <option value="4 GiB"> 4 GiB </option>
             </datalist>
           </div>
         </div>
@@ -184,9 +218,9 @@ export async function showCreatingDialog(
           }
         }
       }
-      return { "name": "undefined", "selected": false, "singularityImage": "DUMMY" };
+      return { "name": "undefined", "selected": false, "singularityImage": "DUMMY", user_cores: 1, user_memory: "DUMMY"};
     } else {
-      return { "name": "undefined", "selected": false, "singularityImage": "DUMMY" };
+      return { "name": "undefined", "selected": false, "singularityImage": "DUMMY", user_cores: 1, user_memory: "DUMMY"};
     }
   });
 }

@@ -1,22 +1,80 @@
-# dask-labextension: af_plugin
+# Dask JupyterLab Extension
 
-This is a fork of [Dask JupyterLab Extension](https://github.com/dask/dask-labextension) to support multiple types of cluster selection as shown in the figures:
+[![Build Status](https://github.com/dask/dask-labextension/actions/workflows/python.yaml/badge.svg)](https://github.com/dask/dask-labextension/actions/workflows/python.yaml) [![Version](https://img.shields.io/npm/v/dask-labextension.svg)](https://www.npmjs.com/package/dask-labextension) [![Downloads](https://img.shields.io/npm/dm/dask-labextension.svg)](https://www.npmjs.com/package/dask-labextension) [![Dependencies](https://img.shields.io/librariesio/release/npm/dask-labextension.svg)](https://libraries.io/npm/dask-labextension)
 
-<img src="dask_newcluster.png"><img align="right" src="dask_newcluster_choice.png">
+This package provides a JupyterLab extension to manage Dask clusters,
+as well as embed Dask's dashboard plots directly into JupyterLab panes.
+
+![Dask Extension](./dask.png)
+
+## Explanatory Video (5 minutes)
+
+<a href="http://www.youtube.com/watch?feature=player_embedded&v=EX_voquHdk0 "
+   target="_blank">
+<img src="http://img.youtube.com/vi/EX_voquHdk0/0.jpg"
+       alt="Dask + JupyterLab Screencast" width="560" height="315" border="10" />
+</a>
 
 ## Requirements
 
-JupyterLab >= 3.0
+JupyterLab >= 1.0
 distributed >= 1.24.1
 
 ## Installation
 
-To install the Dask JupyterLab extension you will need to have JupyterLab 3.0 or greater installed.
+To install the Dask JupyterLab extension you will need to have JupyterLab installed.
+For JupyterLab < 3.0, you will also need [Node.js](https://nodejs.org/) version >= 12.
+These are available through a variety of sources.
+One source common to Python users is the conda package manager.
 
 ```bash
-jlpm
-jlpm build
-python3 -m pip install . --use-feature=in-tree-build
+conda install jupyterlab
+conda install -c conda-forge nodejs
+```
+
+### JupyterLab 4.x
+
+Install the latest version of the extension for the JupyterLab 4
+support. You should be able to install this extension with pip or conda,
+and start using it immediately, e.g.
+
+```bash
+pip install dask-labextension
+```
+
+### JupyterLab 3.x
+
+For JupyterLab 3.x, use lastest supported version `6.2.0`.
+
+```bash
+pip install dask-labextension==6.2.0
+```
+
+### JupyterLab 2.x
+
+Prior to JupyterLab 3.0 client-side and server-side components needed
+to be installed separately, with node available on the machine.
+
+The server-side component can be installed via pip or conda-forge:
+
+```bash
+pip install 'dask_labextension<5'
+```
+
+```bash
+conda install -c conda-forge 'dask-labextension<5'
+```
+
+You then build the client-side extension into JupyterLab with:
+
+```bash
+jupyter labextension install dask-labextension
+```
+
+If you are running Notebook 5.2 or earlier, enable the server extension by running
+
+```bash
+jupyter serverextension enable --py --sys-prefix dask_labextension
 ```
 
 ## Configuration of Dask cluster management
@@ -27,27 +85,13 @@ Options for how to launch these clusters are set via the
 [dask configuration system](http://docs.dask.org/en/latest/configuration.html#configuration),
 typically a `.yml` file on disk.
 
-You can specify the list of clusters you want to use with the `factories` field in the `labextension.yaml` file, as following:
+By default the extension launches a `LocalCluster`, for which the configuration is:
 
 ```yaml
 labextension:
-  factories:
-    # First type of cluster (a custom class from a Python module)
-    - name: "HTCondor"
-      module: "dask_remote_jobqueue"
-      class: "RemoteHtcondor"
-      args: []
-      kwargs: {}
-    # Second type of cluster
-    - name: "Local"
-      module: "dask.distributed"
-      class: "LocalCluster"
-      args: []
-      kwargs: {}
-  # Backup options
   factory:
-    module: "dask.distributed"
-    class: "LocalCluster"
+    module: 'dask.distributed'
+    class: 'LocalCluster'
     args: []
     kwargs: {}
   default:
@@ -66,7 +110,88 @@ labextension:
     #     maximum: 50
 ```
 
-**Note**: if the field `factories` is not present, the extension will search the `factory` attribute and there will not be a menu selection but only the factory indicated will be used.
+In this configuration, `factory` gives the module, class name, and arguments needed to create the cluster.
+The `default` key describes the initial number of workers for the cluster, as well as whether it is adaptive.
+The `initial` key gives a list of initial clusters to start upon launch of the notebook server.
+
+In addition to `LocalCluster`, this extension has been used to launch several other Dask cluster
+objects, a few examples of which are:
+
+- A SLURM cluster, using
+
+```yaml
+labextension:
+    factory:
+      module: 'dask_jobqueue'
+       class: 'SLURMCluster'
+       args: []
+       kwargs: {}
+```
+
+- A PBS cluster, using
+
+```yaml
+labextension:
+  factory:
+    module: 'dask_jobqueue'
+    class: 'PBSCluster'
+    args: []
+    kwargs: {}
+```
+
+- A [Kubernetes cluster](https://github.com/pangeo-data/pangeo-cloud-federation/blob/8f7f4bf9963ef1ed180dd20c952ff1aa8df54ca2/deployments/ocean/image/binder/dask_config.yaml#L37-L42), using
+
+```yaml
+labextension:
+  factory:
+    module: dask_kubernetes
+    class: KubeCluster
+    args: []
+    kwargs: {}
+```
+
+## Configuring a default layout
+
+This extension can store a default layout for the Dask dashboard panes,
+which is useful if you find yourself reaching for the same dashboard charts over and over.
+You can launch the default layout via the command palette,
+or by going to the File menu and choosing "Launch Dask Dashboard Layout".
+
+Default layouts can be configured via the JupyterLab config system
+(either using the JSON editor or the user interface).
+Specify a layout by writing a JSON object keyed by the
+[individual charts](https://github.com/dask/distributed/blob/f31fbde748294065ed70dd5c4399821fa664a9f1/distributed/dashboard/scheduler.py#L72-L117)
+you would like to open.
+Each chart is opened with a `mode`, and a `ref`.
+`mode` refers to how the chart is to be added to the workspace.
+For example, if you want to split a panel and add the new one to the right, choose `split-right`.
+Other options are `split-top`, `split-bottom`, `split-left`, `tab-after`, and `tab-before`.
+`ref` refers to the panel to which `mode` is applied, and might be the names of other dashboard panels.
+If `ref` is `null`, the panel in question is added at the top of the layout hierarchy.
+
+A concrete example of a default layout is
+
+```json
+{
+  "individual-task-stream": {
+    "mode": "split-right",
+    "ref": null
+  },
+  "individual-workers-memory": {
+    "mode": "split-bottom",
+    "ref": "individual-task-stream"
+  },
+  "individual-progress": {
+    "mode": "split-right",
+    "ref": "individual-workers-memory"
+  }
+}
+```
+
+which adds the task stream to the right of the workspace,
+then adds the worker memory chart below the task stream,
+then adds the progress chart to the right of the worker memory chart.
+
 ## Development install
 
 As described in the [JupyterLab documentation](https://jupyterlab.readthedocs.io/en/stable/extension/extension_dev.html#developing-a-prebuilt-extension)
@@ -92,4 +217,52 @@ To run an editable install of the server extension, run
 ```bash
 pip install -e .
 jupyter serverextension enable --sys-prefix dask_labextension
+```
+
+## Publishing
+
+This extension contains a front-end component written in TypeScript
+and a back-end component written in Python.
+The front-end is compiled to Javascript during the build process
+and is distributed as static assets along with the Python package.
+
+### Release process
+
+This requires `node`, `build`, `hatch` and `twine` to be installed.
+
+```bash
+# To set version (e.g. 7.0.0). hatch will update version string in package.json
+hatch version "7.0.0"
+
+# Examples of bumping version
+# minor bump
+hatch version minor  # Bumps to 7.1.0
+# beta pre-release bump
+# If published to pypi this can be installed with the --pre flag to pip
+hatch version b  # Bumps to 7.1.0b0
+# bump minor and beta
+hatch version minor,b  # Bumps to 7.2.0b0
+# release all of the --pre-release flags such as alpha beta rc
+hatch release  # Bumps to 7.2.0
+
+# git commit after bumping version
+git add package.json && git commit -m "Bump version: {version}"
+# Tag this version
+git tag {version}
+
+# Finally push to main, build and upload package to PyPI
+git push upstream main && git push upstream main --tags  # pushes to GitHub
+python -m build .  # Build the package
+twine upload dist/*  # Upload the package to PyPI
+```
+
+### Handling Javascript package version conflicts
+
+Unlike Python, Javascript packages can include more than one version of the same dependency.
+Usually the `yarn` package manager handles this okay, but occasionally you might end up with conflicting versions,
+or with unexpected package bloat.
+You can try to fix this by deduplicating dependencies:
+
+```bash
+jlpm yarn-deduplicate -s fewer
 ```
